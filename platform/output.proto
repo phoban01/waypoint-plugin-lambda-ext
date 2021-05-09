@@ -1,0 +1,24 @@
+
+syntax = "proto3";
+
+package platform;
+
+option go_package = "github.com/phoban01/lambda-ex/platform";
+
+// You can customise this message to change the fields for
+// the output value from your Deployment
+message Deployment {
+  string id = 1;
+
+  // The AWS region the function is deployed in
+  string region = 3;
+
+  // The ARN for the Lambda function itself.
+  string func_arn = 4;
+
+  // The ARN for the version of the Lambda function this deployment uses.
+  string ver_arn = 5;
+
+  // The version identifier AWS uses for this version (basically a serial increasing number)
+  string version = 6;
+}
