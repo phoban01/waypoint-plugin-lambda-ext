@@ -14,7 +14,7 @@ Removes automatic creation of:
 
 Example usage:
 
-```
+```hcl
 project = "my-project"
 
 app "my-function" {
