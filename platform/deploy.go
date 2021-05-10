@@ -154,12 +154,32 @@ func (p *Platform) deploy(
 			reset = true
 		}
 
-		update.VpcConfig = &lambda.VpcConfig{
-			SubnetIds:        p.config.SubnetIds,
-			SecurityGroupIds: p.config.SecurityGroupIds,
+		if curFunc.Configuration.FileSystemConfigs[0].Arn != p.config.EfsAccessPointArn &&
+			curFunc.Configuration.FileSystemConfigs[0].LocalMountPath != p.config.EfsMountPath {
+			update.FileSystemConfigs = []*lambda.FileSystemConfig{
+				{
+					Arn:            p.config.EfsAccessPointArn,
+					LocalMountPath: p.config.EfsMountPath,
+				},
+			}
+			reset = true
 		}
 
-		reset = true
+		if len(curFunc.Configuration.Environment.Variables) > 0 &&
+			*curFunc.Configuration.Environment.Variables["ENV"] != env {
+			update.Environment.Variables["ENV"] = aws.String(env)
+			reset = true
+		}
+
+		if !slicesEqual(curFunc.Configuration.VpcConfig.SubnetIds, p.config.SubnetIds) {
+			update.VpcConfig.SubnetIds = p.config.SubnetIds
+			reset = true
+		}
+
+		if !slicesEqual(curFunc.Configuration.VpcConfig.SecurityGroupIds, p.config.SecurityGroupIds) {
+			update.VpcConfig.SecurityGroupIds = p.config.SecurityGroupIds
+			reset = true
+		}
 
 		if reset {
 			update.FunctionName = curFunc.Configuration.FunctionArn
@@ -375,4 +395,14 @@ func (p *Platform) destroyWorkspace(ctx context.Context,
 	st.Step(terminal.StatusOK, "Deleted Lambda function")
 
 	return nil
+}
+
+func slicesEqual(a, b []*string) bool {
+	for i, v := range a {
+		if v != b[i] {
+			return false
+		}
+	}
+
+	return true
 }
