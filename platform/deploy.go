@@ -7,7 +7,6 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/awserr"
-	"github.com/aws/aws-sdk-go/service/eventbridge"
 	"github.com/aws/aws-sdk-go/service/lambda"
 	"github.com/hashicorp/go-hclog"
 	"github.com/hashicorp/waypoint-plugin-sdk/terminal"
@@ -31,7 +30,6 @@ type DeployConfig struct {
 	SecurityGroupIds  []*string `hcl:"security_group_ids,optional"`
 	EfsAccessPointArn *string   `hcl:"efs_access_point_arn,optional"`
 	EfsMountPath      *string   `hcl:"efs_mount_path,optional"`
-	EventSource       *string   `hcl:"event_source,optional"`
 }
 
 type Platform struct {
@@ -71,12 +69,16 @@ const (
 
 	// How long the function should run before terminating it.
 	DefaultTimeout = 60
+
+	//
+	DefaultEnv = "dev"
 )
 
 func (p *Platform) deploy(
 	ctx context.Context,
 	log hclog.Logger,
 	src *component.Source,
+	job *component.JobInfo,
 	img *ecr.Image,
 	deployConfig *component.DeploymentConfig,
 	ui terminal.UI,
@@ -117,6 +119,11 @@ func (p *Platform) deploy(
 	timeout := int64(p.config.Timeout)
 	if timeout == 0 {
 		timeout = DefaultTimeout
+	}
+
+	env := job.Workspace
+	if env == "default" {
+		env = DefaultEnv
 	}
 
 	step.Done()
@@ -204,10 +211,16 @@ func (p *Platform) deploy(
 					SecurityGroupIds: p.config.SecurityGroupIds,
 				},
 				FileSystemConfigs: []*lambda.FileSystemConfig{
-					&lambda.FileSystemConfig{
+					{
 						Arn:            p.config.EfsAccessPointArn,
 						LocalMountPath: p.config.EfsMountPath,
-					}},
+					},
+				},
+				Environment: &lambda.Environment{
+					Variables: map[string]*string{
+						"ENV": aws.String(env),
+					},
+				},
 			})
 
 			if err != nil {
@@ -277,52 +290,6 @@ func (p *Platform) deploy(
 	step.Update("Published Lambda function: %s (%s)", verarn, *ver.Version)
 	step.Done()
 
-	if p.config.EventSource != nil {
-		step = sg.Add("Creating EventBridge Rule")
-
-		evSvc := eventbridge.New(sess)
-
-		rule, err := evSvc.PutRule(&eventbridge.PutRuleInput{
-			Name:         aws.String(src.App),
-			EventPattern: aws.String(fmt.Sprintf("{\"source\": [\"%s\"]}", *p.config.EventSource)),
-			State:        aws.String("ENABLED"),
-		})
-
-		if err != nil {
-			return nil, err
-		}
-
-		step.Update("Created EventBridge rule: %s", *rule.RuleArn)
-
-		time.Sleep(time.Second * 3)
-
-		_, err = lamSvc.AddPermission(&lambda.AddPermissionInput{
-			StatementId:  aws.String(fmt.Sprintf("lambda-eventbridge-%s", src.App)),
-			FunctionName: aws.String(verarn),
-			Action:       aws.String("lambda:InvokeFunction"),
-			Principal:    aws.String("events.amazonaws.com"),
-			SourceArn:    rule.RuleArn,
-		})
-
-		_, err = evSvc.PutTargets(&eventbridge.PutTargetsInput{
-			Rule: aws.String(src.App),
-			Targets: []*eventbridge.Target{
-				&eventbridge.Target{
-					Id:        aws.String(src.App),
-					Arn:       aws.String(verarn),
-					InputPath: aws.String("$.detail"),
-				},
-			},
-		})
-
-		if err != nil {
-			return nil, err
-		}
-
-		step.Update("Created EventBridge rule target")
-		step.Done()
-	}
-
 	deployment.Region = p.config.Region
 	deployment.Id = id
 	deployment.FuncArn = funcarn
@@ -348,6 +315,7 @@ func (p *Platform) destroy(ctx context.Context,
 
 	sess, err := utils.GetSession(&utils.SessionConfig{
 		Region: p.config.Region,
+		Logger: log,
 	})
 	if err != nil {
 		return err
@@ -368,21 +336,33 @@ func (p *Platform) destroy(ctx context.Context,
 	}
 	st.Step(terminal.StatusOK, "Deleted Lambda function version")
 
-	evSvc := eventbridge.New(sess)
-	_, err = evSvc.RemoveTargets(&eventbridge.RemoveTargetsInput{
-		Rule: aws.String(src.App),
-		Ids: []*string{
-			aws.String(src.App),
-		},
-	})
+	return err
+}
 
+func (p *Platform) DestroyWorkspaceFunc() interface{} {
+	return p.destroyWorkspace
+}
+
+func (p *Platform) destroyWorkspace(ctx context.Context,
+	log hclog.Logger,
+	ui terminal.UI,
+	src *component.Source,
+) error {
+	// We'll update the user in real time
+	st := ui.Status()
+	defer st.Close()
+
+	sess, err := utils.GetSession(&utils.SessionConfig{
+		Region: p.config.Region,
+		Logger: log,
+	})
 	if err != nil {
 		return err
 	}
 
-	st.Step(terminal.StatusOK, "Deleted EventBridge Target")
-
 	st.Update("Deleting Lambda function")
+
+	lamSvc := lambda.New(sess)
 
 	_, err = lamSvc.DeleteFunction(&lambda.DeleteFunctionInput{
 		FunctionName: aws.String(src.App),
@@ -394,16 +374,5 @@ func (p *Platform) destroy(ctx context.Context,
 
 	st.Step(terminal.StatusOK, "Deleted Lambda function")
 
-	st.Update("Deleting EventBridge rule")
-	_, err = evSvc.DeleteRule(&eventbridge.DeleteRuleInput{
-		Name: aws.String(src.App),
-	})
-
-	if err != nil {
-		return err
-	}
-
-	st.Step(terminal.StatusOK, "Deleted EventBridge rule")
-
-	return err
+	return nil
 }

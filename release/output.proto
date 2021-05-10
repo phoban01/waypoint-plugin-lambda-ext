@@ -1,0 +1,11 @@
+syntax = "proto3";
+
+package release;
+
+option go_package = "github.com/phoban01/lambda-ext/release";
+
+message Release {
+  string url = 1;
+  string event_source = 3;
+  string function_arn = 4;
+}
