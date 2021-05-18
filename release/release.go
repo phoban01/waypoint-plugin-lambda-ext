@@ -16,6 +16,7 @@ import (
 
 type ReleaseConfig struct {
 	Region      string  `hcl:"region,optional"`
+	EventBus    *string `hcl:"event_bus,optional"`
 	EventSource *string `hcl:"event_source,optional"`
 	Url         string  `hcl:"url,optional"`
 }
@@ -66,6 +67,10 @@ func (rm *ReleaseManager) release(
 
 	release := &Release{}
 
+	if rm.config.EventBus == nil {
+		rm.config.EventBus = aws.String("default")
+	}
+
 	sess, err := utils.GetSession(&utils.SessionConfig{
 		Region: rm.config.Region,
 		Logger: log,
@@ -76,12 +81,15 @@ func (rm *ReleaseManager) release(
 
 	step.Done()
 
+	//TODO: add flag for create_rule.. by default assume the role already exists
+	//and if so don't create or delete the rule
 	step = sg.Add("Creating EventBridge Rule")
 
 	evSvc := eventbridge.New(sess)
 
 	rule, err := evSvc.PutRule(&eventbridge.PutRuleInput{
 		Name:         aws.String(src.App),
+		EventBusName: rm.config.EventBus,
 		EventPattern: aws.String(fmt.Sprintf("{\"source\": [\"%s\"]}", *rm.config.EventSource)),
 		State:        aws.String("ENABLED"),
 	})
